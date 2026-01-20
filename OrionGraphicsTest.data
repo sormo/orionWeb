@@ -1,3 +1,92 @@
+// --- Shared Vertex Shader ---
+struct VertexOutput {
+    @builtin(position) pos : vec4<f32>,
+    @location(0) uv : vec2<f32>,
+};
+
+@vertex fn vs_main(@builtin(vertex_index) idx : u32) -> VertexOutput {
+    var out: VertexOutput;
+    var p = vec2<f32>(0.0, 0.0);
+    if (idx == 0u) { p = vec2<f32>(-1.0, -1.0); }
+    else if (idx == 1u) { p = vec2<f32>(3.0, -1.0); }
+    else { p = vec2<f32>(-1.0, 3.0); }
+    out.pos = vec4<f32>(p, 0.0, 1.0);
+    out.uv = vec2<f32>(p.x * 0.5 + 0.5, 1.0 - (p.y * 0.5 + 0.5));
+    return out;
+}
+
+// --- 1. Threshold (Group 0, Bindings 0-2) ---
+@group(0) @binding(0) var t_tex_thresh : texture_2d<f32>;
+@group(0) @binding(1) var s_samp_thresh : sampler;
+
+struct ThreshParams {
+    threshold : f32,
+    knee : f32,
+};
+@group(0) @binding(2) var<uniform> u_thresh : ThreshParams;
+
+@fragment fn fs_threshold(in: VertexOutput) -> @location(0) vec4<f32> {
+    let size = vec2<f32>(textureDimensions(t_tex_thresh));
+    let tex_el = 1.0 / size; 
+    let offset = tex_el * 1.5; 
+    
+    let c1 = textureSample(t_tex_thresh, s_samp_thresh, in.uv + vec2<f32>(-offset.x, -offset.y)).rgb;
+    let c2 = textureSample(t_tex_thresh, s_samp_thresh, in.uv + vec2<f32>( offset.x, -offset.y)).rgb;
+    let c3 = textureSample(t_tex_thresh, s_samp_thresh, in.uv + vec2<f32>(-offset.x,  offset.y)).rgb;
+    let c4 = textureSample(t_tex_thresh, s_samp_thresh, in.uv + vec2<f32>( offset.x,  offset.y)).rgb;
+    
+    let color = max(c1, max(c2, max(c3, c4)));
+    let brightness = max(color - vec3<f32>(u_thresh.threshold), vec3<f32>(0.0));
+    return vec4<f32>(brightness, 1.0);
+}
+
+// --- 2. Blur (Group 0, Bindings 3-5) ---
+@group(0) @binding(3) var t_tex_blur : texture_2d<f32>;
+@group(0) @binding(4) var s_samp_blur : sampler;
+
+struct BlurParams {
+    dir : vec2<f32>,
+    radius : f32, 
+};
+@group(0) @binding(5) var<uniform> u_blur : BlurParams;
+
+@fragment fn fs_blur(in: VertexOutput) -> @location(0) vec4<f32> {
+    let weights = array<f32, 5>(0.227027, 0.1945946, 0.1216216, 0.054054, 0.016216);
+    let size = textureDimensions(t_tex_blur);
+    let tex_offset = 1.0 / vec2<f32>(size); 
+    
+    var result = textureSample(t_tex_blur, s_samp_blur, in.uv).rgb * weights[0];
+    
+    for(var i = 1; i < 5; i++) {
+        let off = vec2<f32>(f32(i)) * u_blur.dir * tex_offset * u_blur.radius;
+        result += textureSample(t_tex_blur, s_samp_blur, in.uv + off).rgb * weights[i];
+        result += textureSample(t_tex_blur, s_samp_blur, in.uv - off).rgb * weights[i];
+    }
+    
+    return vec4<f32>(result, 1.0);
+}
+
+// --- 3. Composite (Group 0, Bindings 6-9) ---
+@group(0) @binding(6) var t_scene_comp : texture_2d<f32>;
+@group(0) @binding(7) var t_bloom_comp : texture_2d<f32>;
+@group(0) @binding(8) var s_samp_comp : sampler;
+
+struct CompParams {
+    exposure : f32,
+    intensity : f32,
+};
+@group(0) @binding(9) var<uniform> u_comp : CompParams;
+
+@fragment fn fs_composite(in: VertexOutput) -> @location(0) vec4<f32> {
+    let sceneColor = textureSample(t_scene_comp, s_samp_comp, in.uv).rgb;
+    let bloomColor = textureSample(t_bloom_comp, s_samp_comp, in.uv).rgb;
+    
+    var hdrColor = sceneColor + bloomColor * u_comp.intensity;
+    var result = vec3<f32>(1.0) - exp(-hdrColor * u_comp.exposure);
+    result = pow(result, vec3<f32>(1.0 / 2.2));
+    
+    return vec4<f32>(result, 1.0);
+}
 struct VertexInput {
     @location(0) position: vec3<f32>,
     @location(1) color: vec4<f32>,
@@ -226,6 +315,119 @@ fn fs_main(vert: VertexOutput) -> @location(0) vec4<f32> {
     }
 
     return vec4<f32>(finalColor.rgb * finalColor.a * alpha, finalColor.a * alpha);
+}
+// --- Shared Vertex Shader (Fullscreen Triangle) ---
+struct VertexOutput {
+    @builtin(position) pos : vec4<f32>,
+    @location(0) uv : vec2<f32>,
+};
+
+@vertex fn vs_fullscreen(@builtin(vertex_index) idx : u32) -> VertexOutput {
+    var pos = array<vec2<f32>, 3>(
+        vec2<f32>(-1.0, -1.0),
+        vec2<f32>( 3.0, -1.0),
+        vec2<f32>(-1.0,  3.0)
+    );
+
+    var out: VertexOutput;
+    out.pos = vec4<f32>(pos[idx], 0.0, 1.0);
+    
+    // UV: Top-Left (0,0) to Bottom-Right (1,1)
+    out.uv = out.pos.xy * 0.5 + 0.5;
+    out.uv.y = 1.0 - out.uv.y; // Flip Y so (0,0) is Top-Left (Matches SDL Mouse)
+    
+    return out;
+}
+
+// --- G-Buffer Fragment Shader ---
+struct GBufferOutput {
+    @location(0) color : vec4<f32>,
+    @location(1) normal : vec4<f32>,
+};
+
+@fragment fn fs_gbuffer(in: VertexOutput) -> GBufferOutput {
+    var out: GBufferOutput;
+
+    // Aspect Ratio Correction (The Fix for Ellipse)
+    // We want a perfect circle, regardless of window size.
+    let aspect = 1280.0 / 720.0; // Assume 16:9 for this test (or pass as uniform)
+    
+    var c = in.uv * 2.0 - 1.0; // Map to -1..1
+    c.x *= aspect;             // Stretch X range to match physical aspect
+    
+    // Now 'c' represents physical distance from center.
+    // Let's define the sphere radius as 0.8 units of SCREEN HEIGHT.
+    let radius = 0.8; 
+    let dist = length(c);
+    
+    if (dist > radius) { discard; } 
+
+    // Normal Generation
+    // Calculate Z height of sphere based on corrected distance
+    let z = sqrt(radius * radius - dist * dist) / radius;
+    
+    // Normal Vector
+    // Note: 'c.y' is negative at Top (-1). We want Normal to point Up (-1).
+    // This matches standard normal map logic (Y- down).
+    let normal = normalize(vec3<f32>(c.x / radius, c.y / radius, z)); 
+
+    out.color = vec4<f32>(0.2, 0.8, 1.0, 1.0); // Cyan
+    out.normal = vec4<f32>(normal * 0.5 + 0.5, 1.0); // Pack -1..1 -> 0..1
+    return out;
+}
+
+// --- Lighting Fragment Shader ---
+
+@group(0) @binding(0) var t_albedo : texture_2d<f32>;
+@group(0) @binding(1) var t_normal : texture_2d<f32>;
+@group(0) @binding(2) var s_samp : sampler;
+
+struct Light {
+    pos : vec2<f32>, 
+    color : vec3<f32>,
+    radius : f32,
+};
+@group(0) @binding(3) var<uniform> u_light : Light;
+
+@fragment fn fs_lighting(in: VertexOutput) -> @location(0) vec4<f32> {
+    let albedo = textureSample(t_albedo, s_samp, in.uv).rgb;
+    let packedNormal = textureSample(t_normal, s_samp, in.uv).rgb;
+    
+    // Background Check (if normal is empty/black, it's background)
+    if (length(packedNormal) < 0.1) {
+        return vec4<f32>(0.05, 0.05, 0.05, 1.0);
+    }
+    
+    // Unpack Normal
+    let normal = normalize(packedNormal * 2.0 - 1.0);
+    
+    // Lighting Geometry (Must match G-Buffer Space)
+    let aspect = 1280.0 / 720.0;
+    
+    // Convert Pixel and Light to the same Aspect-Corrected space used in GBuffer
+    var p = in.uv * 2.0 - 1.0;
+    p.x *= aspect;
+    
+    var l = u_light.pos * 2.0 - 1.0;
+    l.x *= aspect;
+    
+    let pixelPos = vec3<f32>(p, 0.0);
+    let lightPos = vec3<f32>(l, 0.5); // Lift light (Z=0.5)
+    
+    let L_vec = lightPos - pixelPos;
+    let dist = length(L_vec);
+    let L = normalize(L_vec);
+    
+    let NdotL = max(dot(normal, L), 0.0);
+    
+    // Specular
+    let V = vec3<f32>(0.0, 0.0, 1.0);
+    let R = reflect(-L, normal);
+    let Spec = pow(max(dot(R, V), 0.0), 64.0);
+    
+    let lighting = (NdotL + Spec) * u_light.color * 2.0;
+    
+    return vec4<f32>(albedo * lighting, 1.0);
 }
 {"atlas":{"type":"mtsdf","distanceRange":32,"distanceRangeMiddle":0,"size":48,"width":1024,"height":1024,"yOrigin":"bottom"},"metrics":{"emSize":1,"lineHeight":1.171875,"ascender":0.927734375,"descender":-0.244140625,"underlineY":-0.09765625,"underlineThickness":0.048828125},"glyphs":[{"unicode":32,"advance":0.2490234375},{"unicode":48,"advance":0.568359375,"planeBounds":{"left":-0.28898111979166669,"bottom":-0.34375,"right":0.85685221354166663,"top":1.0729166666666665},"atlasBounds":{"left":584.5,"bottom":955.5,"right":639.5,"top":1023.5}},{"unicode":49,"advance":0.568359375,"planeBounds":{"left":-0.26131184895833337,"bottom":-0.34375,"right":0.71785481770833326,"top":1.0520833333333333},"atlasBounds":{"left":217.5,"bottom":877.5,"right":264.5,"top":944.5}},{"unicode":50,"advance":0.568359375,"planeBounds":{"left":-0.29793294270833337,"bottom":-0.34375,"right":0.86873372395833326,"top":1.0729166666666665},"atlasBounds":{"left":640.5,"bottom":955.5,"right":696.5,"top":1023.5}},{"unicode":51,"advance":0.568359375,"planeBounds":{"left":-0.29850260416666669,"bottom":-0.34375,"right":0.84733072916666663,"top":1.0729166666666665},"atlasBounds":{"left":697.5,"bottom":955.5,"right":752.5,"top":1023.5}},{"unicode":52,"advance":0.568359375,"planeBounds":{"left":-0.30957031250000006,"bottom":-0.34375,"right":0.87792968749999978,"top":1.0520833333333333},"atlasBounds":{"left":265.5,"bottom":877.5,"right":322.5,"top":944.5}},{"unicode":53,"advance":0.568359375,"planeBounds":{"left":-0.27726236979166669,"bottom":-0.34375,"right":0.86857096354166663,"top":1.0520833333333333},"atlasBounds":{"left":323.5,"bottom":877.5,"right":378.5,"top":944.5}},{"unicode":54,"advance":0.568359375,"planeBounds":{"left":-0.28092447916666669,"bottom":-0.34375,"right":0.86490885416666663,"top":1.0520833333333333},"atlasBounds":{"left":379.5,"bottom":877.5,"right":434.5,"top":944.5}},{"unicode":55,"advance":0.568359375,"planeBounds":{"left":-0.30330403645833337,"bottom":-0.34375,"right":0.86336263020833326,"top":1.0520833333333333},"atlasBounds":{"left":435.5,"bottom":877.5,"right":491.5,"top":944.5}},{"unicode":56,"advance":0.568359375,"planeBounds":{"left":-0.28922526041666669,"bottom":-0.34375,"right":0.85660807291666663,"top":1.0729166666666665},"atlasBounds":{"left":753.5,"bottom":955.5,"right":808.5,"top":1023.5}},{"unicode":57,"advance":0.568359375,"planeBounds":{"left":-0.29581705729166669,"bottom":-0.34375,"right":0.85001627604166663,"top":1.0729166666666665},"atlasBounds":{"left":809.5,"bottom":955.5,"right":864.5,"top":1023.5}},{"unicode":65,"advance":0.66552734375,"planeBounds":{"left":-0.33365885416666669,"bottom":-0.34375,"right":0.99967447916666663,"top":1.0520833333333333},"atlasBounds":{"left":933.5,"bottom":877.5,"right":997.5,"top":944.5}},{"unicode":66,"advance":0.630859375,"planeBounds":{"left":-0.26782226562500006,"bottom":-0.34375,"right":0.91967773437499978,"top":1.0520833333333333},"atlasBounds":{"left":59.5,"bottom":808.5,"right":116.5,"top":875.5}},{"unicode":67,"advance":0.65283203125,"planeBounds":{"left":-0.29272460937500006,"bottom":-0.34375,"right":0.95727539062499978,"top":1.0729166666666665},"atlasBounds":{"left":865.5,"bottom":955.5,"right":925.5,"top":1023.5}},{"unicode":68,"advance":0.6533203125,"planeBounds":{"left":-0.26676432291666669,"bottom":-0.34375,"right":0.94156901041666663,"top":1.0520833333333333},"atlasBounds":{"left":176.5,"bottom":808.5,"right":234.5,"top":875.5}},{"unicode":69,"advance":0.5654296875,"planeBounds":{"left":-0.26822916666666669,"bottom":-0.34375,"right":0.87760416666666663,"top":1.0520833333333333},"atlasBounds":{"left":637.5,"bottom":808.5,"right":692.5,"top":875.5}},{"unicode":70,"advance":0.54931640625,"planeBounds":{"left":-0.26440429687500006,"bottom":-0.34375,"right":0.86059570312499978,"top":1.0520833333333333},"atlasBounds":{"left":693.5,"bottom":808.5,"right":747.5,"top":875.5}},{"unicode":71,"advance":0.6806640625,"planeBounds":{"left":-0.29052734375000006,"bottom":-0.34375,"right":0.95947265624999978,"top":1.0729166666666665},"atlasBounds":{"left":926.5,"bottom":955.5,"right":986.5,"top":1023.5}},{"unicode":72,"advance":0.71044921875,"planeBounds":{"left":-0.27050781250000006,"bottom":-0.34375,"right":0.97949218749999978,"top":1.0520833333333333},"atlasBounds":{"left":576.5,"bottom":808.5,"right":636.5,"top":875.5}},{"unicode":73,"advance":0.2822265625,"planeBounds":{"left":-0.25472005208333337,"bottom":-0.34375,"right":0.53694661458333326,"top":1.0520833333333333},"atlasBounds":{"left":537.5,"bottom":808.5,"right":575.5,"top":875.5}},{"unicode":74,"advance":0.55517578125,"planeBounds":{"left":-0.31876627604166669,"bottom":-0.34375,"right":0.82706705729166663,"top":1.0520833333333333},"atlasBounds":{"left":481.5,"bottom":808.5,"right":536.5,"top":875.5}},{"unicode":75,"advance":0.63037109375,"planeBounds":{"left":-0.27050781250000006,"bottom":-0.34375,"right":0.97949218749999978,"top":1.0520833333333333},"atlasBounds":{"left":420.5,"bottom":808.5,"right":480.5,"top":875.5}},{"unicode":76,"advance":0.541015625,"planeBounds":{"left":-0.26708984375000006,"bottom":-0.34375,"right":0.85791015624999978,"top":1.0520833333333333},"atlasBounds":{"left":365.5,"bottom":808.5,"right":419.5,"top":875.5}},{"unicode":77,"advance":0.87548828125,"planeBounds":{"left":-0.27132161458333331,"bottom":-0.34375,"right":1.1453450520833333,"top":1.0520833333333333},"atlasBounds":{"left":296.5,"bottom":808.5,"right":364.5,"top":875.5}},{"unicode":78,"advance":0.7099609375,"planeBounds":{"left":-0.27075195312500006,"bottom":-0.34375,"right":0.97924804687499978,"top":1.0520833333333333},"atlasBounds":{"left":235.5,"bottom":808.5,"right":295.5,"top":875.5}},{"unicode":79,"advance":0.6904296875,"planeBounds":{"left":-0.29069010416666669,"bottom":-0.34375,"right":0.98014322916666663,"top":1.0729166666666665},"atlasBounds":{"left":40.5,"bottom":876.5,"right":101.5,"top":944.5}},{"unicode":80,"advance":0.63916015625,"planeBounds":{"left":-0.26627604166666669,"bottom":-0.34375,"right":0.94205729166666663,"top":1.0520833333333333},"atlasBounds":{"left":117.5,"bottom":808.5,"right":175.5,"top":875.5}},{"unicode":81,"advance":0.6904296875,"planeBounds":{"left":-0.29313151041666669,"bottom":-0.46875,"right":0.97770182291666663,"top":1.0729166666666665},"atlasBounds":{"left":44.5,"bottom":949.5,"right":105.5,"top":1023.5}},{"unicode":82,"advance":0.6240234375,"planeBounds":{"left":-0.26383463541666669,"bottom":-0.34375,"right":0.94449869791666663,"top":1.0520833333333333},"atlasBounds":{"left":0.5,"bottom":808.5,"right":58.5,"top":875.5}},{"unicode":83,"advance":0.603515625,"planeBounds":{"left":-0.30240885416666669,"bottom":-0.34375,"right":0.90592447916666663,"top":1.0729166666666665},"atlasBounds":{"left":158.5,"bottom":876.5,"right":216.5,"top":944.5}},{"unicode":84,"advance":0.60693359375,"planeBounds":{"left":-0.32104492187500006,"bottom":-0.34375,"right":0.92895507812499978,"top":1.0520833333333333},"atlasBounds":{"left":872.5,"bottom":877.5,"right":932.5,"top":944.5}},{"unicode":85,"advance":0.65185546875,"planeBounds":{"left":-0.27750651041666669,"bottom":-0.34375,"right":0.93082682291666663,"top":1.0520833333333333},"atlasBounds":{"left":813.5,"bottom":877.5,"right":871.5,"top":944.5}},{"unicode":86,"advance":0.64697265625,"planeBounds":{"left":-0.33227539062500006,"bottom":-0.34375,"right":0.98022460937499978,"top":1.0520833333333333},"atlasBounds":{"left":749.5,"bottom":877.5,"right":812.5,"top":944.5}},{"unicode":87,"advance":0.8798828125,"planeBounds":{"left":-0.31778971354166663,"bottom":-0.34375,"right":1.2030436197916667,"top":1.0520833333333333},"atlasBounds":{"left":675.5,"bottom":877.5,"right":748.5,"top":944.5}},{"unicode":88,"advance":0.6328125,"planeBounds":{"left":-0.31852213541666669,"bottom":-0.34375,"right":0.95231119791666663,"top":1.0520833333333333},"atlasBounds":{"left":613.5,"bottom":877.5,"right":674.5,"top":944.5}},{"unicode":89,"advance":0.609375,"planeBounds":{"left":-0.33146158854166669,"bottom":-0.34375,"right":0.93937174479166663,"top":1.0520833333333333},"atlasBounds":{"left":551.5,"bottom":877.5,"right":612.5,"top":944.5}},{"unicode":90,"advance":0.60205078125,"planeBounds":{"left":-0.30045572916666669,"bottom":-0.34375,"right":0.90787760416666663,"top":1.0520833333333333},"atlasBounds":{"left":492.5,"bottom":877.5,"right":550.5,"top":944.5}},{"unicode":97,"advance":0.541015625,"planeBounds":{"left":-0.29174804687500006,"bottom":-0.34375,"right":0.83325195312499978,"top":0.88541666666666652},"atlasBounds":{"left":165.5,"bottom":748.5,"right":219.5,"top":807.5}},{"unicode":98,"advance":0.56298828125,"planeBounds":{"left":-0.28043619791666669,"bottom":-0.34375,"right":0.86539713541666663,"top":1.0937499999999998},"atlasBounds":{"left":106.5,"bottom":954.5,"right":161.5,"top":1023.5}},{"unicode":99,"advance":0.5234375,"planeBounds":{"left":-0.29589843750000006,"bottom":-0.34375,"right":0.82910156249999978,"top":0.88541666666666652},"atlasBounds":{"left":0.5,"bottom":748.5,"right":54.5,"top":807.5}},{"unicode":100,"advance":0.564453125,"planeBounds":{"left":-0.30289713541666669,"bottom":-0.34375,"right":0.84293619791666663,"top":1.0937499999999998},"atlasBounds":{"left":162.5,"bottom":954.5,"right":217.5,"top":1023.5}},{"unicode":101,"advance":0.53662109375,"planeBounds":{"left":-0.29996744791666669,"bottom":-0.34375,"right":0.84586588541666663,"top":0.88541666666666652},"atlasBounds":{"left":109.5,"bottom":748.5,"right":164.5,"top":807.5}},{"unicode":102,"advance":0.3544921875,"planeBounds":{"left":-0.31176757812500006,"bottom":-0.34375,"right":0.68823242187499978,"top":1.0937499999999998},"atlasBounds":{"left":218.5,"bottom":954.5,"right":266.5,"top":1023.5}},{"unicode":103,"advance":0.56689453125,"planeBounds":{"left":-0.29996744791666669,"bottom":-0.55208333333333337,"right":0.84586588541666663,"top":0.88541666666666652},"atlasBounds":{"left":267.5,"bottom":954.5,"right":322.5,"top":1023.5}},{"unicode":104,"advance":0.55517578125,"planeBounds":{"left":-0.27449544270833337,"bottom":-0.34375,"right":0.82967122395833326,"top":1.0937499999999998},"atlasBounds":{"left":323.5,"bottom":954.5,"right":376.5,"top":1023.5}},{"unicode":105,"advance":0.25537109375,"planeBounds":{"left":-0.27807617187500006,"bottom":-0.34375,"right":0.53442382812499989,"top":1.0729166666666665},"atlasBounds":{"left":0.5,"bottom":876.5,"right":39.5,"top":944.5}},{"unicode":106,"advance":0.25048828125,"planeBounds":{"left":-0.37125651041666669,"bottom":-0.55208333333333337,"right":0.52457682291666663,"top":1.0729166666666665},"atlasBounds":{"left":0.5,"bottom":945.5,"right":43.5,"top":1023.5}},{"unicode":107,"advance":0.52197265625,"planeBounds":{"left":-0.27921549479166669,"bottom":-0.34375,"right":0.86661783854166663,"top":1.0937499999999998},"atlasBounds":{"left":377.5,"bottom":954.5,"right":432.5,"top":1023.5}},{"unicode":108,"advance":0.25537109375,"planeBounds":{"left":-0.26814778645833337,"bottom":-0.34375,"right":0.52351888020833326,"top":1.0937499999999998},"atlasBounds":{"left":433.5,"bottom":954.5,"right":471.5,"top":1023.5}},{"unicode":109,"advance":0.8701171875,"planeBounds":{"left":-0.27351888020833331,"bottom":-0.34375,"right":1.1431477864583333,"top":0.88541666666666652},"atlasBounds":{"left":907.5,"bottom":816.5,"right":975.5,"top":875.5}},{"unicode":110,"advance":0.55615234375,"planeBounds":{"left":-0.27449544270833337,"bottom":-0.34375,"right":0.82967122395833326,"top":0.88541666666666652},"atlasBounds":{"left":853.5,"bottom":816.5,"right":906.5,"top":875.5}},{"unicode":111,"advance":0.5693359375,"planeBounds":{"left":-0.29915364583333337,"bottom":-0.34375,"right":0.86751302083333326,"top":0.88541666666666652},"atlasBounds":{"left":796.5,"bottom":816.5,"right":852.5,"top":875.5}},{"unicode":112,"advance":0.56298828125,"planeBounds":{"left":-0.28092447916666669,"bottom":-0.55208333333333337,"right":0.86490885416666663,"top":0.88541666666666652},"atlasBounds":{"left":472.5,"bottom":954.5,"right":527.5,"top":1023.5}},{"unicode":113,"advance":0.56787109375,"planeBounds":{"left":-0.30314127604166669,"bottom":-0.55208333333333337,"right":0.84269205729166663,"top":0.88541666666666652},"atlasBounds":{"left":528.5,"bottom":954.5,"right":583.5,"top":1023.5}},{"unicode":114,"advance":0.3515625,"planeBounds":{"left":-0.27994791666666669,"bottom":-0.34375,"right":0.67838541666666663,"top":0.88541666666666652},"atlasBounds":{"left":976.5,"bottom":816.5,"right":1022.5,"top":875.5}},{"unicode":115,"advance":0.51611328125,"planeBounds":{"left":-0.29695638020833337,"bottom":-0.34375,"right":0.80721028645833326,"top":0.88541666666666652},"atlasBounds":{"left":55.5,"bottom":748.5,"right":108.5,"top":807.5}},{"unicode":116,"advance":0.33251953125,"planeBounds":{"left":-0.33479817708333337,"bottom":-0.34375,"right":0.64436848958333326,"top":1.0104166666666665},"atlasBounds":{"left":748.5,"bottom":810.5,"right":795.5,"top":875.5}},{"unicode":117,"advance":0.5556640625,"planeBounds":{"left":-0.27522786458333337,"bottom":-0.34375,"right":0.82893880208333326,"top":0.86458333333333326},"atlasBounds":{"left":386.5,"bottom":749.5,"right":439.5,"top":807.5}},{"unicode":118,"advance":0.49462890625,"planeBounds":{"left":-0.32682291666666669,"bottom":-0.34375,"right":0.81901041666666663,"top":0.86458333333333326},"atlasBounds":{"left":330.5,"bottom":749.5,"right":385.5,"top":807.5}},{"unicode":119,"advance":0.7431640625,"planeBounds":{"left":-0.32755533854166663,"bottom":-0.34375,"right":1.0682779947916667,"top":0.86458333333333326},"atlasBounds":{"left":440.5,"bottom":749.5,"right":507.5,"top":807.5}},{"unicode":120,"advance":0.5029296875,"planeBounds":{"left":-0.32120768229166669,"bottom":-0.34375,"right":0.82462565104166663,"top":0.86458333333333326},"atlasBounds":{"left":274.5,"bottom":749.5,"right":329.5,"top":807.5}},{"unicode":121,"advance":0.48681640625,"planeBounds":{"left":-0.33024088541666669,"bottom":-0.55208333333333337,"right":0.81559244791666663,"top":0.86458333333333326},"atlasBounds":{"left":102.5,"bottom":876.5,"right":157.5,"top":944.5}},{"unicode":122,"advance":0.5029296875,"planeBounds":{"left":-0.29768880208333337,"bottom":-0.34375,"right":0.80647786458333326,"top":0.86458333333333326},"atlasBounds":{"left":220.5,"bottom":749.5,"right":273.5,"top":807.5}}],"kerning":[]}
 ‰PNG
