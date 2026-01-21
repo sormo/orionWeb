@@ -156,23 +156,23 @@ fn sdRoundedBox(p: vec2<f32>, b: vec2<f32>, r: f32) -> f32 {
 
 fn sampleTexture(index: i32, uv: vec2<f32>) -> vec4<f32> {
     switch(index) {
-        case 0: { return textureSample(t0, s_Diffuse, uv); }
-        case 1: { return textureSample(t1, s_Diffuse, uv); }
-        case 2: { return textureSample(t2, s_Diffuse, uv); }
-        case 3: { return textureSample(t3, s_Diffuse, uv); }
-        case 4: { return textureSample(t4, s_Diffuse, uv); }
-        case 5: { return textureSample(t5, s_Diffuse, uv); }
-        case 6: { return textureSample(t6, s_Diffuse, uv); }
-        case 7: { return textureSample(t7, s_Diffuse, uv); }
-        case 8: { return textureSample(t8, s_Diffuse, uv); }
-        case 9: { return textureSample(t9, s_Diffuse, uv); }
-        case 10: { return textureSample(t10, s_Diffuse, uv); }
-        case 11: { return textureSample(t11, s_Diffuse, uv); }
-        case 12: { return textureSample(t12, s_Diffuse, uv); }
-        case 13: { return textureSample(t13, s_Diffuse, uv); }
-        case 14: { return textureSample(t14, s_Diffuse, uv); }
-        case 15: { return textureSample(t15, s_Diffuse, uv); }
-        default: { return textureSample(t0, s_Diffuse, uv); } // Fallback
+        case 0: { return textureSampleLevel(t0, s_Diffuse, uv, 0.0); }
+        case 1: { return textureSampleLevel(t1, s_Diffuse, uv, 0.0); }
+        case 2: { return textureSampleLevel(t2, s_Diffuse, uv, 0.0); }
+        case 3: { return textureSampleLevel(t3, s_Diffuse, uv, 0.0); }
+        case 4: { return textureSampleLevel(t4, s_Diffuse, uv, 0.0); }
+        case 5: { return textureSampleLevel(t5, s_Diffuse, uv, 0.0); }
+        case 6: { return textureSampleLevel(t6, s_Diffuse, uv, 0.0); }
+        case 7: { return textureSampleLevel(t7, s_Diffuse, uv, 0.0); }
+        case 8: { return textureSampleLevel(t8, s_Diffuse, uv, 0.0); }
+        case 9: { return textureSampleLevel(t9, s_Diffuse, uv, 0.0); }
+        case 10: { return textureSampleLevel(t10, s_Diffuse, uv, 0.0); }
+        case 11: { return textureSampleLevel(t11, s_Diffuse, uv, 0.0); }
+        case 12: { return textureSampleLevel(t12, s_Diffuse, uv, 0.0); }
+        case 13: { return textureSampleLevel(t13, s_Diffuse, uv, 0.0); }
+        case 14: { return textureSampleLevel(t14, s_Diffuse, uv, 0.0); }
+        case 15: { return textureSampleLevel(t15, s_Diffuse, uv, 0.0); }
+        default: { return textureSampleLevel(t0, s_Diffuse, uv, 0.0); } // Fallback
     }
 }
 
