@@ -859,7 +859,7 @@ fn cs_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         let distSq = dot(diff, diff);
         let dist = sqrt(distSq);
 
-        // Softening
+        // Softening (apply gravity only if distance is larger than)
         if (dist > 5.0) {
             let f = (params.gravConst * p.mass * other.mass) / distSq;
             force += normalize(diff) * f;
@@ -890,7 +890,7 @@ fn vs_main(@builtin(vertex_index) vIdx: u32, @builtin(instance_index) iIdx: u32)
     // Generate Quad
     var pos = vec2<f32>(0.0, 0.0);
     var uv = vec2<f32>(0.0, 0.0);
-    let size = min(max(3.0, p.mass * 2.0), 50.0);
+    let size = min(max(3.0, p.mass * 3.0), 50.0);
 
     switch(vIdx) {
         case 0u: { pos = vec2<f32>(-1.0,  1.0); uv = vec2<f32>(-1.0,  1.0); }
@@ -900,15 +900,25 @@ fn vs_main(@builtin(vertex_index) vIdx: u32, @builtin(instance_index) iIdx: u32)
     }
 
     let worldPos = p.pos + (pos * size);
-    let clipPos = worldPos / 1000.0; // Viewport Scale
+    let clipPos = worldPos / 1000.0; // Viewport Scale (expects square window)
 
     var output: VertexOutput;
     output.Position = vec4<f32>(clipPos, 0.0, 1.0);
     
-    // Color based on velocity
-    let speed = length(p.vel);
-    output.color = mix(vec3<f32>(0.2, 0.5, 1.0), vec3<f32>(1.0, 0.8, 0.4), min(speed * 0.05, 1.0));
     output.uv = uv;
+
+    // Color computation
+    let speed = length(p.vel);
+    let t = min(speed / 20.0, 1.0); 
+
+    let colorCold = vec3<f32>(0.1, 0.1, 0.3); 
+    let colorHot  = vec3<f32>(1.0, 0.8, 0.4);
+    let baseColor = mix(colorCold, colorHot, t);
+
+    let brightness = 0.8 + (t * 2.0); 
+
+    output.color = baseColor * brightness;
+    
     return output;
 }
 
@@ -920,8 +930,10 @@ fn fs_main(@location(0) color: vec3<f32>, @location(1) uv: vec2<f32>) -> @locati
     if (dist > 1.0) { discard; }
     
     // Soft glow edge
-    let alpha = 1.0 - smoothstep(0.5, 1.0, dist);
-    return vec4<f32>(color * 2.0, alpha); // HDR-ish brightness
+    let alpha = 1.0 - smoothstep(0.0, 1.0, dist);
+    let finalAlpha = alpha * 0.3;
+
+    return vec4<f32>(color, finalAlpha);
 }
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
